@@ -12,7 +12,9 @@ see the LICENSE file included with this software (see LINENSE file)
 from __future__ import division
 import sys
 import time
+import math
 import re
+import serial
 import socket
 import threading
 import numpy as np
@@ -61,8 +63,17 @@ class QuickBot():
 
     # ADC Pins
     IRPin = ('P9_38', 'P9_40', 'P9_36', 'P9_35', 'P9_33')
-    encPosPin = ('P9_13', 'P9_12')
-    encDirPin = ('P9_15', 'P9_11')
+#     encPosPin = ('P9_13', 'P9_12')
+#     encDirPin = ('P9_15', 'P9_11')
+
+    # Serial
+    # TTYO1: Rx=P9_26  Tx=P9_24
+    # TTYO2: Rx=P9_22  Tx=P9_21
+    # TTYO4: Rx=P9_11  Tx=P9_13
+    # TTYO5: Rx=P9_38  Tx=P9_38
+    encoderSerial = (serial.Serial(port = '/dev/ttyO1', baudrate = 38400, timeout = .1), \
+                     serial.Serial(port = '/dev/ttyO2', baudrate = 38400, timeout = .1))
+
 
     # Constraints
     pwmLimits = [-100, 100]  # [min, max]
@@ -74,6 +85,7 @@ class QuickBot():
     # Other variables
     ledFlag = True
     cmdBuffer = ''
+    encoderBuffer = ['', '']
 
     # UDP variables
     baseIP = '192.168.7.1'
@@ -90,8 +102,8 @@ class QuickBot():
         for side in range(0,2):
             GPIO.setup(self.dir1Pin[side], GPIO.OUT)
             GPIO.setup(self.dir2Pin[side], GPIO.OUT)
-            GPIO.setup(self.encPosPin[side], GPIO.IN)
-            GPIO.setup(self.encDirPin[side], GPIO.IN)
+#             GPIO.setup(self.encPosPin[side], GPIO.IN)
+#             GPIO.setup(self.encDirPin[side], GPIO.IN)
             
         GPIO.setup(self.ledPin, GPIO.OUT)
 
@@ -110,6 +122,7 @@ class QuickBot():
         self.encDir = [1, -1]      # Last encoder direction
         self.encPos = [0, 0]      # Last encoder tick position
         self.encVel = [0.0, 0.0]  # Last encoder tick velocity
+        self.encPosOffset = [0, 0] # Offset from raw encoder tick
 
         # Set motor speed to 0
         self.setPWM(self.pwm)
@@ -130,12 +143,12 @@ class QuickBot():
         self.encPosThread = 2*[None]        
         self.encVelThread = 2*[None]
         for side in range(0, 2):
-            self.encDirThread[side] = threading.Thread(target = readEncDir, args = (self, side))
-            self.encDirThread[side].daemon = True
+#             self.encDirThread[side] = threading.Thread(target = readEncDir, args = (self, side))
+#             self.encDirThread[side].daemon = True
             self.encPosThread[side] = threading.Thread(target = readEncPos, args = (self, side))
             self.encPosThread[side].daemon = True
-            self.encVelThread[side] = threading.Thread(target = calcEncVel, args = (self, side))
-            self.encVelThread[side].daemon = True
+#             self.encVelThread[side] = threading.Thread(target = calcEncVel, args = (self, side))
+#             self.encVelThread[side].daemon = True
             
             
         # Set IP addresses
@@ -188,11 +201,12 @@ class QuickBot():
         self.cmdParsingThread.start()
         self.IRThread.start()
         for side in range(0, 2):
-            self.encDirThread[side].start()
+#             self.encDirThread[side].start()
             self.encPosThread[side].start()
-            self.encVelThread[side].start()
+#             self.encVelThread[side].start()
         
         # Run loop
+        self.calEncPos()
         while RUN_FLAG is True:
             self.update()
 
@@ -203,6 +217,7 @@ class QuickBot():
             else:
                 self.ledFlag = True
                 GPIO.output(self.ledPin, GPIO.LOW)
+                print '[' + ', '.join(map(str, self.getEncPos())) + ']'
             time.sleep(self.sampleTime)
         
         self.cleanup()
@@ -219,6 +234,20 @@ class QuickBot():
             # tictocPrint()
             # self.writeBuffersToFile()
         sys.stdout.write("Done\n")
+        
+    def calEncPos(self):
+        self.setPWM([100, 100])
+        time.sleep(0.1)
+        self.setPWM([0, 0])
+        time.sleep(1.0)
+        self.resetEncPos()
+
+    def getEncPos(self):
+        return [self.encPos[LEFT] - self.encPosOffset[LEFT], self.encPos[RIGHT] - self.encPosOffset[RIGHT]]
+    
+    def resetEncPos(self):
+        self.encPosOffset[LEFT] = self.encPos[LEFT]
+        self.encPosOffset[RIGHT] = self.encPos[RIGHT]
 
     def update(self):
         pass
@@ -289,7 +318,7 @@ def parseCmd(self):
     
             elif msgResult.group('CMD') == 'ENPOS' or msgResult.group('CMD') == 'ENVAL':
                 if msgResult.group('QUERY'):
-                    reply = '[' + ', '.join(map(str, self.encPos)) + ']'
+                    reply = '[' + ', '.join(map(str, self.getEncPos())) + ']'
                     print 'Sending: ' + reply
                     self.robotSocket.sendto(reply + '\n', (self.baseIP, self.port))
     
@@ -300,8 +329,7 @@ def parseCmd(self):
                     self.robotSocket.sendto(reply + '\n', (self.baseIP, self.port))
     
             elif msgResult.group('CMD') == 'RESET':
-                self.encPos[LEFT] = 0
-                self.encPos[RIGHT] = 0
+                resetEncPos(self)
                 print 'Encoder values reset to [' + ', '.join(map(str, self.encVel)) + ']'
     
             elif msgResult.group('CMD') == 'UPDATE':
@@ -335,51 +363,126 @@ def readIR(self):
             time.sleep(ADCTIME)
             ADC_LOCK.release()
             
-def readEncDir(self, side):
-    global RUN_FLAG
-    
-    while RUN_FLAG:
-        GPIO.wait_for_edge(self.encDirPin[side], GPIO.BOTH)
-        if side == LEFT:
-            if GPIO.input(self.encDirPin[side]):
-                self.encDir[side] = 1
-            else:
-                self.encDir[side] = -1
-        else:
-            if GPIO.input(self.encDirPin[side]):
-                self.encDir[side] = -1
-            else:
-                self.encDir[side] = 1
-
+# def readEncDir(self, side):
+#     global RUN_FLAG
+#     
+#     while RUN_FLAG:
+#         GPIO.wait_for_edge(self.encDirPin[side], GPIO.BOTH)
+#         if side == LEFT:
+#             if GPIO.input(self.encDirPin[side]):
+#                 self.encDir[side] = 1
+#             else:
+#                 self.encDir[side] = -1
+#         else:
+#             if GPIO.input(self.encDirPin[side]):
+#                 self.encDir[side] = -1
+#             else:
+#                 self.encDir[side] = 1
+            
+                
 def readEncPos(self, side):
     global RUN_FLAG
+    sampleTime = (20.0 / 1000.0)
     
     while RUN_FLAG:
-        GPIO.wait_for_edge(self.encPosPin[side], GPIO.RISING)
-        self.encPos[side] = self.encPos[side] + self.encDir[side]
+        parseEncoderBuffer(self, side)
+#         if parseEncoderBuffer(self, side):
+#             if side == 0:
+#                 print "LEFT:  " + str(self.encPos[side])
+#             else:
+#                 print "RIGHT:  " + str(self.encPos[side])
+#         else:
+#             if side == 0:
+#                 print "LEFT:  --"
+#             else:
+#                 print "RIGHT: --"
+        time.sleep(sampleTime)
+            
+    
+def parseEncoderBuffer(self, side):
+    encoderUpdateFlag = False
+
+    bytesInWaiting = self.encoderSerial[side].inWaiting()
+#     if side == 0:
+#         if side == 0:
+#             print "LEFT:  " + str(bytesInWaiting)
+#         else:
+#             print "RIGHT:  " + str(bytesInWaiting)
+    if (bytesInWaiting > 0):
+        self.encoderBuffer[side] += self.encoderSerial[side].read(bytesInWaiting)
+
+        if len(self.encoderBuffer[side]) > 30:
+            self.encoderBuffer[side] = self.encoderBuffer[side][-30:]
+
+        if len(self.encoderBuffer[side]) >= 15:
+            DPattern = r'D([0-9A-F]{8})'
+            DRegex = re.compile(DPattern)
+            DResult = DRegex.findall(self.encoderBuffer[side])
+            if len(DResult) >= 1:
+                val = convertHEXtoDEC(DResult[-1], 8)
+                if not math.isnan(val):
+                    self.encPos[side] = val
+                    encoderUpdateFlag = True
+
+            VPattern = r'V([0-9A-F]{4})'
+            VRegex = re.compile(VPattern)
+            VResult = VRegex.findall(self.encoderBuffer[side])
+            if len(VResult) >= 1:
+                vel = convertHEXtoDEC(VResult[-1], 4)
+                if not math.isnan(vel):
+                    self.encVel[side] = vel
+                    encoderUpdateFlag = True
+
+        return encoderUpdateFlag
+    
+def convertHEXtoDEC(hexString, N):
+    # Return 2's compliment of hexString
+    for hexChar in hexString:
+        asciiNum = ord(hexChar)
+        if not ((asciiNum >= 48 and asciiNum <= 57) or \
+             (asciiNum >= 65 and asciiNum <= 70) or \
+             (asciiNum >= 97 and asciiNum <= 102)):
+             val = float('nan')
+             return val
+
+    if len(hexString) == N:
+        val = int(hexString, 16)
+        bits = 4*len(hexString)
+        if  (val & (1<<(bits-1))) != 0:
+            val = val - (1<<bits)
+        return val
+    
+    
+
+# def readEncPos(self, side):
+#     global RUN_FLAG
+#     
+#     while RUN_FLAG:
+#         GPIO.wait_for_edge(self.encPosPin[side], GPIO.RISING)
+#         self.encPos[side] = self.encPos[side] + self.encDir[side]
                     
         
-def calcEncVel(self, side):
-    global RUN_FLAG
-    
-    sampleTime = (20.0 / 1000.0)
-    winSize = 3 # size of window to average over
-    
-    t0 = time.time()
-    t = 0.0
-    encPos = 0.0
-    while RUN_FLAG:
-        tPrev = t
-        encPosPrev = encPos
-        encPos = self.encPos[side]
-        t = time.time() - t0
-        encVel = float(encPos - encPosPrev) / (t - tPrev)
-        (muPlus, sigma2Plus, n) = recursiveMeanVar(encVel, winSize-1, self.encVel[side], 0.0)
-        self.encVel[side] = muPlus
-        if np.abs(self.encVel[side]) < 1e-2:
-            self.encVel[side] = 0.0
-            
-        time.sleep(sampleTime)
+# def calcEncVel(self, side):
+#     global RUN_FLAG
+#     
+#     sampleTime = (20.0 / 1000.0)
+#     winSize = 3 # size of window to average over
+#     
+#     t0 = time.time()
+#     t = 0.0
+#     encPos = 0.0
+#     while RUN_FLAG:
+#         tPrev = t
+#         encPosPrev = encPos
+#         encPos = self.encPos[side]
+#         t = time.time() - t0
+#         encVel = float(encPos - encPosPrev) / (t - tPrev)
+#         (muPlus, sigma2Plus, n) = recursiveMeanVar(encVel, winSize-1, self.encVel[side], 0.0)
+#         self.encVel[side] = muPlus
+#         if np.abs(self.encVel[side]) < 1e-2:
+#             self.encVel[side] = 0.0
+#             
+#         time.sleep(sampleTime)
         
 
 def recursiveMeanVar(x, l, mu, sigma2):
