@@ -79,7 +79,7 @@ class QuickBot():
     pwmLimits = [-100, 100]  # [min, max]
     
     # Wheel parameter
-    ticksPerTurn = 64  # Number of ticks on encoder disc
+    ticksPerTurn = 128  # Number of ticks on encoder disc
     wheelRadius = (58.7 / 2.0) / 1000.0  # Radius of wheel in meters
 
     # Other variables
@@ -102,8 +102,6 @@ class QuickBot():
         for side in range(0,2):
             GPIO.setup(self.dir1Pin[side], GPIO.OUT)
             GPIO.setup(self.dir2Pin[side], GPIO.OUT)
-#             GPIO.setup(self.encPosPin[side], GPIO.IN)
-#             GPIO.setup(self.encDirPin[side], GPIO.IN)
             
         GPIO.setup(self.ledPin, GPIO.OUT)
 
@@ -143,13 +141,8 @@ class QuickBot():
         self.encPosThread = 2*[None]        
         self.encVelThread = 2*[None]
         for side in range(0, 2):
-#             self.encDirThread[side] = threading.Thread(target = readEncDir, args = (self, side))
-#             self.encDirThread[side].daemon = True
             self.encPosThread[side] = threading.Thread(target = readEncPos, args = (self, side))
             self.encPosThread[side].daemon = True
-#             self.encVelThread[side] = threading.Thread(target = calcEncVel, args = (self, side))
-#             self.encVelThread[side].daemon = True
-            
             
         # Set IP addresses
         self.baseIP = baseIP
@@ -201,9 +194,7 @@ class QuickBot():
         self.cmdParsingThread.start()
         self.IRThread.start()
         for side in range(0, 2):
-#             self.encDirThread[side].start()
             self.encPosThread[side].start()
-#             self.encVelThread[side].start()
         
         # Run loop
         self.calEncPos()
@@ -217,7 +208,7 @@ class QuickBot():
             else:
                 self.ledFlag = True
                 GPIO.output(self.ledPin, GPIO.LOW)
-                print '[' + ', '.join(map(str, self.getEncPos())) + ']'
+#                 print '[' + ', '.join(map(str, self.getEncPos())) + ']'
             time.sleep(self.sampleTime)
         
         self.cleanup()
@@ -243,11 +234,18 @@ class QuickBot():
         self.resetEncPos()
 
     def getEncPos(self):
-        return [self.encPos[LEFT] - self.encPosOffset[LEFT], self.encPos[RIGHT] - self.encPosOffset[RIGHT]]
+        return [self.encPos[LEFT] - self.encPosOffset[LEFT], -1*(self.encPos[RIGHT] - self.encPosOffset[RIGHT])]
     
     def resetEncPos(self):
         self.encPosOffset[LEFT] = self.encPos[LEFT]
         self.encPosOffset[RIGHT] = self.encPos[RIGHT]
+        
+    def getPos(self):
+        pos = [0.0, 0.0]
+        encPos = self.getEncPos()
+        for side in range(0,2):
+            pos[side] = encPos[side] / self.ticksPerTurn * 2 * np.pi * self.wheelRadius
+        return pos
 
     def update(self):
         pass
@@ -286,7 +284,7 @@ def parseCmd(self):
     
         if bufferResult:
             msg = bufferResult.group()
-            print msg
+#             print msg
             self.cmdBuffer = ''
     
             msgPattern = r'\$(?P<CMD>[A-Z]{3,})(?P<SET>=?)(?P<QUERY>\??)(?(2)(?P<ARGS>.*)).*\*'
@@ -315,6 +313,12 @@ def parseCmd(self):
                     reply = '[' + ', '.join(map(str, self.IRVal)) + ']'
                     print 'Sending: ' + reply
                     self.robotSocket.sendto(reply + '\n', (self.baseIP, self.port))
+                    
+            elif msgResult.group('CMD') == 'POS':
+                if msgResult.group('QUERY'):
+                    reply = '[' + ', '.join(map(str, self.getPos())) + ']'
+                    print 'Sending: ' + reply
+                    self.robotSocket.sendto(reply + '\n', (self.baseIP, self.port))
     
             elif msgResult.group('CMD') == 'ENPOS' or msgResult.group('CMD') == 'ENVAL':
                 if msgResult.group('QUERY'):
@@ -329,7 +333,7 @@ def parseCmd(self):
                     self.robotSocket.sendto(reply + '\n', (self.baseIP, self.port))
     
             elif msgResult.group('CMD') == 'RESET':
-                resetEncPos(self)
+                self.resetEncPos()
                 print 'Encoder values reset to [' + ', '.join(map(str, self.encVel)) + ']'
     
             elif msgResult.group('CMD') == 'UPDATE':
@@ -362,23 +366,7 @@ def readIR(self):
             self.IRVal[i] = ADC.read_raw(self.IRPin[i])
             time.sleep(ADCTIME)
             ADC_LOCK.release()
-            
-# def readEncDir(self, side):
-#     global RUN_FLAG
-#     
-#     while RUN_FLAG:
-#         GPIO.wait_for_edge(self.encDirPin[side], GPIO.BOTH)
-#         if side == LEFT:
-#             if GPIO.input(self.encDirPin[side]):
-#                 self.encDir[side] = 1
-#             else:
-#                 self.encDir[side] = -1
-#         else:
-#             if GPIO.input(self.encDirPin[side]):
-#                 self.encDir[side] = -1
-#             else:
-#                 self.encDir[side] = 1
-            
+                       
                 
 def readEncPos(self, side):
     global RUN_FLAG
@@ -386,16 +374,6 @@ def readEncPos(self, side):
     
     while RUN_FLAG:
         parseEncoderBuffer(self, side)
-#         if parseEncoderBuffer(self, side):
-#             if side == 0:
-#                 print "LEFT:  " + str(self.encPos[side])
-#             else:
-#                 print "RIGHT:  " + str(self.encPos[side])
-#         else:
-#             if side == 0:
-#                 print "LEFT:  --"
-#             else:
-#                 print "RIGHT: --"
         time.sleep(sampleTime)
             
     
@@ -403,11 +381,7 @@ def parseEncoderBuffer(self, side):
     encoderUpdateFlag = False
 
     bytesInWaiting = self.encoderSerial[side].inWaiting()
-#     if side == 0:
-#         if side == 0:
-#             print "LEFT:  " + str(bytesInWaiting)
-#         else:
-#             print "RIGHT:  " + str(bytesInWaiting)
+
     if (bytesInWaiting > 0):
         self.encoderBuffer[side] += self.encoderSerial[side].read(bytesInWaiting)
 
@@ -451,39 +425,7 @@ def convertHEXtoDEC(hexString, N):
         if  (val & (1<<(bits-1))) != 0:
             val = val - (1<<bits)
         return val
-    
-    
-
-# def readEncPos(self, side):
-#     global RUN_FLAG
-#     
-#     while RUN_FLAG:
-#         GPIO.wait_for_edge(self.encPosPin[side], GPIO.RISING)
-#         self.encPos[side] = self.encPos[side] + self.encDir[side]
-                    
-        
-# def calcEncVel(self, side):
-#     global RUN_FLAG
-#     
-#     sampleTime = (20.0 / 1000.0)
-#     winSize = 3 # size of window to average over
-#     
-#     t0 = time.time()
-#     t = 0.0
-#     encPos = 0.0
-#     while RUN_FLAG:
-#         tPrev = t
-#         encPosPrev = encPos
-#         encPos = self.encPos[side]
-#         t = time.time() - t0
-#         encVel = float(encPos - encPosPrev) / (t - tPrev)
-#         (muPlus, sigma2Plus, n) = recursiveMeanVar(encVel, winSize-1, self.encVel[side], 0.0)
-#         self.encVel[side] = muPlus
-#         if np.abs(self.encVel[side]) < 1e-2:
-#             self.encVel[side] = 0.0
-#             
-#         time.sleep(sampleTime)
-        
+            
 
 def recursiveMeanVar(x, l, mu, sigma2):
     """
