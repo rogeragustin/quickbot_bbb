@@ -138,16 +138,19 @@ class QuickBot(base.BaseBot):
         self.parseCmdBuffer()
 
     def readIRValues(self):
-        prevVal = self.irVal[self.ithIR]
+        prevVal = self.irVal
         ADC_LOCK.acquire()
-        self.irVal[self.ithIR] = ADC.read_raw(config.IRS[self.ithIR])
+    	for i in range(0, 4):
+	        self.irVal[i] = ADC.read_raw(config.IRS[i])
+	        
         time.sleep(ADCTIME)
         ADC_LOCK.release()
+		
+		for i in range(0, 4):
+	        if self.irVal[i] >= 1100:
+    	        self.irVal[i] = prevVal[i]
 
-        if self.irVal[self.ithIR] >= 1100:
-            self.irVal[self.ithIR] = prevVal
-
-        self.ithIR = ((self.ithIR + 1) % 5)
+        #self.ithIR = ((self.ithIR + 1) % 5)
 
     def readEncoderValues(self):
         """
