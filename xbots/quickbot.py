@@ -145,10 +145,9 @@ class QuickBot(base.BaseBot):
 	        
         time.sleep(ADCTIME)
         ADC_LOCK.release()
-		
-		for i in range(0, 4):
-	        if self.irVal[i] >= 1100:
-    	        self.irVal[i] = prevVal[i]
+        for i in range(0, 4):
+        	if self.irVal[i] >= 1100:
+        		self.irVal[i] = prevVal[i]
 
         #self.ithIR = ((self.ithIR + 1) % 5)
 
